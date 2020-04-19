@@ -39,6 +39,81 @@
 #include	"eep-protection.h"
 #include	"uep-protection.h"
 
+#include <condition_variable>
+#include <thread>
+#include <mutex>
+
+#include <stdio.h>
+
+
+#define NUM_PARALLEL_CIF_PROCS   4
+
+class CIFproc
+{
+public:
+  CIFproc() {
+    isProcessing. store (false);
+    hasOutputData. store (false);
+    running.store( true );
+#if NUM_PARALLEL_CIF_PROCS > 1
+    thr = std::thread( &CIFproc::run, this );	// start it immediately
+#endif
+  }
+
+  ~CIFproc() {
+#if NUM_PARALLEL_CIF_PROCS > 1
+    stop();
+#endif
+  }
+
+  void triggerProcessing();
+
+#if NUM_PARALLEL_CIF_PROCS > 1
+  void stop();
+#endif
+
+  static std::vector<protDesc> protTable;
+  static void		*userData;
+  static etiwriter_t	etiWriter;
+
+  channel_data chandata[64];
+  int16_t temp [55296];			// 
+  uint8_t theVector [6144];
+
+  int base;
+  int32_t offset;
+
+  std::atomic<bool>	hasOutputData;
+  std::atomic<bool>	isProcessing;
+
+private:
+  void run();
+
+  static int32_t		process_CIF		(CIFproc *);
+  static void			process_CIF2ETI(CIFproc *);
+  static protDesc	*	find(bool, int16_t, int16_t);
+
+  std::atomic<bool>	running;
+#if NUM_PARALLEL_CIF_PROCS > 1
+  std::condition_variable cond;
+  std::mutex condMutex;
+  std::thread	thr;
+
+  static std::mutex protTableMutex;
+#endif
+};
+
+
+std::vector<protDesc> CIFproc::protTable;
+void		* CIFproc::userData = nullptr;
+etiwriter_t	CIFproc::etiWriter = nullptr;
+
+
+#if NUM_PARALLEL_CIF_PROCS > 1
+std::mutex CIFproc::protTableMutex;
+#endif
+
+
 static uint16_t const crctab_1021[256] = {
   0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50a5, 0x60c6, 0x70e7,
   0x8108, 0x9129, 0xa14a, 0xb16b, 0xc18c, 0xd1ad, 0xe1ce, 0xf1ef,
@@ -119,11 +194,11 @@ bool	fibValid  [16];
 	                                                           ensembleName,
 	                                                           programName,
 	                                                           set_fibQuality) {
-	this	-> userData	= userData;
-	this	-> etiWriter	= etiWriter;
+	CIFproc::userData = userData;
+	CIFproc::etiWriter = etiWriter;
 	
 	fibInput		.resize (3 * 2 * params. get_carriers ());
-	dataBuffer		= new RingBuffer<bufferElement> (512);
+	dataBuffer		= new RingBuffer<bufferElement> (512, "eti-generator");
 	index_Out		= 0;
 	BitsperBlock		= 2 * params. get_carriers ();
 	numberofblocksperCIF	= 18;	// mode I
@@ -137,10 +212,7 @@ bool	fibValid  [16];
 }
 
 		etiGenerator::~etiGenerator	(void) {
-	if (running. load ()) {
-	   running. store (false);
-	   threadHandle. join ();
-	}
+	stop();
 	delete		dataBuffer;
 }
 
@@ -164,25 +236,29 @@ void	etiGenerator::reset	(void) {
 	start ();
 }
 
-void	etiGenerator::newFrame		(void) {
-}
-
 void	etiGenerator::processBlock	(int16_t *softbits, int16_t blkno) { 
 bufferElement s;
 	s. blkno = blkno;
 	memcpy (s. data, softbits,
 	                 2 * params. get_carriers () * sizeof (int16_t));
-	while (dataBuffer ->  GetRingBufferWriteAvailable () < 1) 
+	while (dataBuffer ->  GetRingBufferWriteAvailable () < 1)
 	   usleep (1000);
 	dataBuffer -> putDataIntoBuffer (&s, 1);
 }
 
 void	etiGenerator::run		(void) {
+#if NUM_PARALLEL_CIF_PROCS > 1
+std::vector<CIFproc> cifprocArray( NUM_PARALLEL_CIF_PROCS );
+#else
+CIFproc cifprocArray[1];
+#endif
+
 int	i, j, k;
+#if NUM_PARALLEL_CIF_PROCS > 1
+int	cifProcIdx = NUM_PARALLEL_CIF_PROCS -1;
+#endif
 bufferElement b;
 int16_t	CIF_index;
-int16_t	temp [55296];
-uint8_t	theVector [6144];
 int16_t	Minor	= 0;
 const int16_t interleaveMap[] = {0,8,4,12,2,10,6,14,1,9,5,13,3,11,7,15};
 
@@ -193,6 +269,13 @@ const int16_t interleaveMap[] = {0,8,4,12,2,10,6,14,1,9,5,13,3,11,7,15};
 	      usleep (1000);
 	   if (!running. load ())
 	      break;
+
+#if NUM_PARALLEL_CIF_PROCS > 1
+	   CIFproc &cifproc = cifprocArray[cifProcIdx];
+	   waitProcessedAndHandleResults( &cifproc );
+#else
+	   CIFproc &cifproc = cifprocArray[0];
+#endif
 
 	   dataBuffer -> getDataFromBuffer (&b, 1);
 	   if (b. blkno != expected_block) {
@@ -250,7 +333,7 @@ const int16_t interleaveMap[] = {0,8,4,12,2,10,6,14,1,9,5,13,3,11,7,15};
 	   if (CIF_index == numberofblocksperCIF - 1) {
 	      for (i = 0; i < 3072 * 18; i++) {
 	         int index = interleaveMap [i & 017];
-	         temp [i] = cifVector [(index_Out + index) & 017] [i];
+	         cifproc.temp [i] = cifVector [(index_Out + index) & 017] [i];
 	         cifVector [index_Out & 0xF] [i] = cif_In [i];
 	      }
 //	we have to wait until the interleave matrix is filled
@@ -267,16 +350,53 @@ const int16_t interleaveMap[] = {0,8,4,12,2,10,6,14,1,9,5,13,3,11,7,15};
 	      if ((CIFCount_hi < 0) || (CIFCount_lo < 0))
 	         continue;
 
-	      int offset	= init_eti (theVector, CIFCount_hi,
+	      int offset	= init_eti (cifproc.theVector, CIFCount_hi,
 	                                               CIFCount_lo, Minor);
-	      int base		= offset;
-	      memcpy (&theVector [offset], fibVector [index_Out], 96);
-	      offset += 96;
+	      cifproc.base = offset;
+	      memcpy (&cifproc.theVector [offset], fibVector [index_Out], 96);
+	      cifproc.offset = offset + 96;
+
 //
 //
 //	oef, here we go for handling the CIF
 	      if (processing. load ()) {
-	         offset	= process_CIF (temp, theVector, offset);
+
+	         // prepare all for process_CIF() in cifproc
+	         for (int16_t i = 0; i < 64; i ++)
+	             my_ficHandler. get_channelInfo (&cifproc.chandata[i], i);
+
+	         cifproc.triggerProcessing();
+#if NUM_PARALLEL_CIF_PROCS > 1
+	         cifProcIdx = ( cifProcIdx + 1 ) % NUM_PARALLEL_CIF_PROCS;
+#endif
+	      }
+
+//	at the end, go for a new eti vector
+	      index_Out	= (index_Out + 1) & 017;
+	      Minor ++;
+	   }
+	}
+
+#if NUM_PARALLEL_CIF_PROCS > 1
+	// wait for running calculations  and  save their results
+	for ( k = 0; k < NUM_PARALLEL_CIF_PROCS; ++k ) {
+	   cifProcIdx = ( cifProcIdx + 1 ) % NUM_PARALLEL_CIF_PROCS;
+	   CIFproc &cifproc = cifprocArray[cifProcIdx];
+	   waitProcessedAndHandleResults( &cifproc );
+	   cifproc.stop();
+	}
+#endif
+}
+
+
+void	CIFproc::process_CIF2ETI(CIFproc *localData) {
+
+	const int base = localData->base;
+
+	int offset	= process_CIF(localData);
+
+	uint8_t *theVector = localData->theVector;
+
 //
 //	EOF - CRC
 //	The "data bytes" are stored in the range base .. offset
@@ -299,29 +419,22 @@ const int16_t interleaveMap[] = {0,8,4,12,2,10,6,14,1,9,5,13,3,11,7,15};
 //
 //	Padding
 	         memset (&theVector [offset], 0x55, 6144 - offset);
-//	         fwrite (theVector, 1, 6144, outputFile);
-	         etiWriter (theVector, 6144, userData);
-//	 static int cnt	= 0;
-//	         fprintf (stderr, "%d\r", ++cnt);
-	      }
-//	at the end, go for a new eti vector
-	      index_Out	= (index_Out + 1) & 017;
-	      Minor ++;
-	   }
-	}
+
+	// delay forwarding of results - to ensure correct ordering
+	localData->hasOutputData.store( true );
 }
 
 //
 //	In process_CIF we iterate over the data in the CIF and map that
 //	upon a segment in the eti vector
-int32_t	etiGenerator::process_CIF (int16_t *input,
-	                           uint8_t *output, int32_t offset) {
+int32_t	CIFproc::process_CIF (CIFproc *localData) {
+int16_t *input = localData->temp;
+uint8_t *output = localData->theVector;
+int32_t offset = localData->offset;
 int16_t	i, j, k;
-uint8_t	shiftRegister [9];
 
 	for (i = 0; i < 64; i ++) {
-	   channel_data data;
-	   my_ficHandler. get_channelInfo (&data, i);
+	   const channel_data & data = localData->chandata[i];
 	   if (!data. in_use)
 	      continue;
 
@@ -393,6 +506,11 @@ void	etiGenerator::startProcessing	(void) {
 }
 
 void	etiGenerator::stop	(void) {
+	if (running. load ()) {
+	   running. store (false);
+	   threadHandle. join ();
+	}
+
 	processing. store (false);
 	if (outputFile != NULL)
 	   fclose (outputFile);
@@ -488,11 +606,15 @@ channel_data data;
 	return fillPointer;
 }
 
-protDesc *etiGenerator::find (bool uepFlag, int16_t bitRate,
+protDesc *CIFproc::find (bool uepFlag, int16_t bitRate,
 	                                           int16_t protLevel) {
-protDesc tmp;
-int	i;
+#if NUM_PARALLEL_CIF_PROCS > 1
+  std::unique_lock<std::mutex> lk( CIFproc::protTableMutex );
+#endif
+  protDesc tmp;
+  int	i;
 
+    std::vector<protDesc> &protTable = CIFproc::protTable;
         for (i = 0; i < protTable. size (); i ++) {
            if (uepFlag != protTable. at (i). uepFlag)
               continue;
@@ -524,4 +646,53 @@ int	i;
 	return &protTable. at (i);
 }
 
+#if NUM_PARALLEL_CIF_PROCS > 1
+void	etiGenerator::waitProcessedAndHandleResults(CIFproc *localData) {
+	while ( localData->isProcessing.load() )
+	   usleep (1000);
+
+	if ( localData->hasOutputData.load() ) {
+	   CIFproc::etiWriter(localData->theVector, 6144, CIFproc::userData);
+	   localData->hasOutputData.store( false );
+	}
+}
+#endif
+
+
+#if NUM_PARALLEL_CIF_PROCS > 1
+void CIFproc::stop() {
+  if ( running.load() ) {
+    running.store( false );
+    cond.notify_one();
+    thr.join ();
+  }
+}
+#endif
+
+void CIFproc::triggerProcessing() {
+#if NUM_PARALLEL_CIF_PROCS > 1
+  isProcessing.store(true);
+  cond.notify_one();
+#else
+  CIFproc::process_CIF2ETI(this);
+  CIFproc::etiWriter(this->theVector, 6144, CIFproc::userData);
+#endif
+}
+
+
+#if NUM_PARALLEL_CIF_PROCS > 1
+void CIFproc::run() {
+  while (true) {
+     std::unique_lock<std::mutex> lk(condMutex);
+    cond.wait( lk );
+    if ( ! running.load() )
+      break;
+
+    if (isProcessing.load() ) {
+      CIFproc::process_CIF2ETI(this);
+      isProcessing.store(false);
+    }
+  }
+}
+#endif
 

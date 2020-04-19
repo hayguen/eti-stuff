@@ -360,7 +360,6 @@ SyncOnPhase:
 	                  (T_u - startIndex) * sizeof (std::complex<float>));
 	   ofdmBufferIndex	= T_u - startIndex;
 
-	   my_etiGenerator	-> newFrame ();
 //Block_0:
 /**
   *	Block 0 is special in that it is used for coarse time synchronization
@@ -448,6 +447,8 @@ SyncOnPhase:
 	}
 //	inputDevice	-> stopReader ();
 	running. store (false);
+	this	-> my_etiGenerator -> stop();
+
 	fprintf (stderr, "ofdmProcessor is shutting down\n");
 }
 

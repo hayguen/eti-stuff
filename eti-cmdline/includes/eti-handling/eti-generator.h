@@ -53,6 +53,7 @@
 
 class	RadioInterface;
 class	ensembleHandler;
+class	CIFproc;
 
 typedef struct {
 	int16_t		blkno;
@@ -79,14 +80,11 @@ public:
 	                         fibquality_t,
 	                         etiwriter_t);
 		~etiGenerator	(void);
-	void	newFrame	(void);
 	void	processBlock	(int16_t *fbits, int16_t blkno);
 	void	stop		(void);
 	void	startProcessing	(void);
 	void	reset		(void);
 private:
-	void		*userData;
-	etiwriter_t	etiWriter;
 	std::thread	threadHandle;
 	std::atomic<bool>	running;
 	void		start	(void);
@@ -104,13 +102,13 @@ private:
 	ficHandler	my_ficHandler;
 	std::atomic<bool>	processing;
 	int16_t		expected_block;
+
 	int32_t		init_eti		(uint8_t *,
 	                                         int16_t, int16_t, int16_t);
-	int32_t		process_CIF		(int16_t *,
-	                                         uint8_t *, int32_t);
+
+	void		waitProcessedAndHandleResults(CIFproc *);
+
 	void		postProcess		(uint8_t *, int32_t);
-	std::vector<protDesc> protTable;
-	protDesc	*find			(bool, int16_t, int16_t);
 };
 
 #endif
