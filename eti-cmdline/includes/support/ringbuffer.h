@@ -150,7 +150,7 @@ public:
 
 	~RingBuffer () {
 	   //if ( numOverflows )
-	      fprintf(stderr, "\n%u buffer overflows in total for %s\n", numOverflows, ringName);
+	   fprintf(stderr, "\n%u buffer overflows in total for %s\n", numOverflows, ringName);
 	   delete[]	 buffer;
 }
 
