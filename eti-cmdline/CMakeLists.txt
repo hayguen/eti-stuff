@@ -1,4 +1,30 @@
 cmake_minimum_required( VERSION 2.8.11 )
+
+######################################################################
+#       R E A D T H I S
+#####################################################################
+
+# options can be set from cmake command line, e.g. like this:
+#   cmake ../eti-cmdline -DAIRSPY=ON -DX64_DEFINED=ON
+# alternatives are to use cmake-gui  or  ccmake (for console)
+
+OPTION(AIRSPY      "Input: AirSpy"      OFF)
+OPTION(SDRPLAY     "Input: SDRPlay"     OFF)
+OPTION(SDRPLAY_V3  "Input: SDRPlay V3"  OFF)
+OPTION(RTLSDR      "Input: RTLSDR"      OFF)
+OPTION(HACKRF      "Input: HACKRF"      OFF)
+OPTION(LIMESDR     "Input: LimeSDR"     OFF)
+OPTION(RAWFILES    "Input: RAWFILES"    OFF)
+OPTION(WAVFILES    "Input: WAVFILES"    OFF)
+OPTION(XMLFILES    "Input: XMLFILES"    OFF)
+OPTION(RTL_TCP     "Input: RTL_TCP"     OFF)
+
+OPTION(DUMPING     "Dump to Wave File?"    OFF)
+OPTION(X64_DEFINED "optimize for x64/SSE"  OFF)
+OPTION(RPI_DEFINED "optimize for ARM/NEON" OFF)
+
+#####################################################################
+
 set (objectName eti_cmdline)
 set (CMAKE_CXX_FLAGS "${CMAKE_XCC_FLAGS} -Wall -std=c++11 -flto -ffast-math")
 set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -flto -ffast-math")
@@ -24,56 +50,63 @@ set(CMAKE_BUILD_TYPE ${CMAKE_BUILD_TYPE} CACHE STRING "")
 ### make sure our local CMake Modules path comes first
 list(INSERT CMAKE_MODULE_PATH 0 ${CMAKE_SOURCE_DIR}/cmake/Modules)
 
-######################################################################
-#       R E A D T H I S
 #####################################################################
 
-if(DEFINED AIRSPY)
-   set(AIRSPY true)
+set(INPUTS )
+
+if(AIRSPY)
    set (objectName eti-cmdline-airspy)
+   list(APPEND INPUTS "AIRSPY")
 endif ()
-
-if(DEFINED SDRPLAY)
-   set(SDRPLAY true)
+if(SDRPLAY)
    set (objectName eti-cmdline-sdrplay)
+   list(APPEND INPUTS "SDRPLAY")
 endif ()
-
-if(DEFINED RTLSDR)
-   set(RTLSDR true)
+if(SDRPLAY_V3)
+   set (objectName eti-cmdline-sdrplay)
+   list(APPEND INPUTS "SDRPLAY_V3")
+endif ()
+if(RTLSDR)
    set (objectName eti-cmdline-rtlsdr)
+   list(APPEND INPUTS "RTLSDR")
 endif ()
-
-if(DEFINED HACKRF)
-   set(HACKRF true)
+if(HACKRF)
    set (objectName eti-cmdline-hackrf)
+   list(APPEND INPUTS "HACKRF")
 endif ()
-
-if(DEFINED RAWFILES)
-   set(RAWFILES true)
+if(LIMESDR)
+   set (objectName eti-cmdline-limesdr)
+   list(APPEND INPUTS "LIMESDR")
+endif ()
+if(RAWFILES)
    set (objectName eti-cmdline-rawfiles)
+   list(APPEND INPUTS "RAWFILES")
 endif ()
-
-if(DEFINED WAVFILES)
-   set(WAVFILES true)
+if(WAVFILES)
    set (objectName eti-cmdline-wavfiles)
+   list(APPEND INPUTS "WAVFILES")
 endif ()
-
-if(DEFINED RTL_TCP)
-   set(RTL_TCP true)
+#if(XMLFILES)
+#   set (objectName eti-cmdline-xml)
+#   list(APPEND INPUTS "XMLFILES")
+#endif ()
+if(RTL_TCP)
    set (objectName eti-cmdline-rtl_tcp)
+   list(APPEND INPUTS "RTL_TCP")
 endif ()
 
-if(DEFINED DUMPING)
-   set(DUMPING true)
-endif ()
+list(LENGTH INPUTS NUM_INPUTS)
+message(STATUS "selected input devices:    ${INPUTS}")
+message(STATUS "number of selected inputs: ${NUM_INPUTS}")
 
-if(DEFINED X64)
-   set(X64_DEFINED true)
-endif ()
+if (NUM_INPUTS EQUAL 0)
+   message(FATAL_ERROR "please select one input device type, e.g. with cmake-gui or ccmake")
+endif()
 
-if(DEFINED RPI_DEFINED)
-   set(RPI_DEFINED true)
-endif ()
+if (NUM_INPUTS GREATER 1)
+   message(FATAL_ERROR "please select only one input device type, e.g. with cmake-gui or ccmake")
+endif()
+
 ########################################################################
 	find_package (PkgConfig)
 
@@ -93,7 +126,10 @@ endif ()
 	   message(FATAL_ERROR "please install libsamplerate")
 	endif ()
 	list(APPEND extraLibs ${LIBSAMPLERATE_LIBRARY})
-	add_definitions (-DHAVE_DUMPING)
+
+	if (DUMPING)
+	   add_definitions (-DHAVE_DUMPING)
+	endif()
 
 	find_library (PTHREADS pthread)
 	if (NOT(PTHREADS))
@@ -186,8 +222,9 @@ endif ()
              ./src/eti-handling/viterbi-spiral/spiral-neon.h
 	   )
    	   add_definitions (-DNEON_AVAILABLE)
-	   set (CMAKE_CXX_FLAGS "${CMAKE_XCC_FLAGS} -mcpu=cortex-a7 -mfloat-abi=hard -mfpu=neon-vfpv4")
-	   set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -mcpu=cortex-a7 -mfloat-abi=hard -mfpu=neon-vfpv4")
+	   # compiler options moved below add_executable .. and target specific
+	   #set (CMAKE_CXX_FLAGS "${CMAKE_XCC_FLAGS} -mcpu=cortex-a7 -mfloat-abi=hard -mfpu=neon-vfpv4")
+	   #set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -mcpu=cortex-a7 -mfloat-abi=hard -mfpu=neon-vfpv4")
 	else (X64_DEFINED)
 	   set (${objectName}_SRCS
                 ${${objectName}_SRCS}
@@ -256,6 +293,40 @@ endif ()
 	 add_definitions (-DHAVE_SDRPLAY)
 	endif (SDRPLAY)
 
+	if (SDRPLAY_V3)
+	   find_path (SDRPLAYLIB_INCLUDE_DIR
+                      NAMES sdrplay_api.h
+                      PATHS
+                      /usr/local/include/
+	   )
+           include_directories (${SDRPLAYLIB_INCLUDE_DIR})
+
+           find_library (SDRPLAYLIB sdrplay_api)
+           if(NOT(SDRPLAYLIB))
+              message(FATAL_ERROR "please install -lsdrplay_api")
+           else(NOT(SDRPLAYLIB))
+              list (APPEND extraLibs ${SDRPLAYLIB})
+           endif(NOT(SDRPLAYLIB))
+
+	   include_directories (
+	     ./devices/sdrplay-handler-v3
+	   )
+
+	   set ($(objectName)_HDRS
+	        ${${objectName}_HDRS}
+	        ./devices/sdrplay-handler-v3/sdrplay-handler-v3.h
+	        ./devices/sdrplay-handler-v3/sdrplay-controller.h
+           )
+
+	   set (${objectName}_SRCS
+	        ${${objectName}_SRCS}
+	        ./devices/sdrplay-handler-v3/sdrplay-handler-v3.cpp
+	        ./devices/sdrplay-handler-v3/sdrplay-controller.cpp
+	   )
+
+	   add_definitions (-DHAVE_SDRPLAY_V3)
+	endif (SDRPLAY_V3)
+
 	if (HACKRF)
            find_path (HACKLIB_INCLUDE_DIR
                       NAMES hackrf.h
@@ -288,6 +359,33 @@ endif ()
 
            add_definitions (-DHAVE_HACKRF)
         endif (HACKRF)
+
+	if (LIMESDR)
+           find_library (LIMELIB LimeSuite)
+           if(NOT(LIMELIB))
+              message(FATAL_ERROR "please install LimeSuite")
+           else(NOT(LIMELIB))
+              list (APPEND extraLibs ${LIMELIB})
+           endif(NOT(LIMELIB))
+
+	   include_directories (
+	     ./devices/lime-handler
+	   )
+
+	   set ($(objectName)_HDRS
+	        ${${objectName}_HDRS}
+	        ./devices/lime-handler/LMS7002M_parameters.h
+	        ./devices/lime-handler/LimeSuite.h
+	        ./devices/lime-handler/lime-handler.h
+           )
+
+	   set (${objectName}_SRCS
+	        ${${objectName}_SRCS}
+	        ./devices/lime-handler/lime-handler.cpp
+	   )
+
+	 add_definitions (-DHAVE_LIME)
+	endif (LIMESDR)
 
 	if (AIRSPY)
            find_package(LibAIRSPY)
@@ -392,6 +490,29 @@ endif ()
 	   add_definitions (-DHAVE_WAVFILES)
 	endif (WAVFILES)
 
+	if (XMLFILES)
+	   include_directories (
+	     ./devices/xml-filereader
+	   )
+
+	   set ($(objectName)_HDRS
+	        ${${objectName}_HDRS}
+	        ./devices/xml-filereader/xml-filereader.h
+	        ./devices/xml-filereader/xmlreader.h
+	        ./devices/xml-filereader/element-reader.h
+	        ./devices/xml-filereader/xml-descriptor.h
+	   )
+
+	   set (${objectName}_SRCS
+	        ${${objectName}_SRCS}
+	        ./devices/xml-filereader/xml-filereader.cpp
+	        ./devices/xml-filereader/xml-reader.cpp
+	        ./devices/xml-filereader/xml-descriptor.cpp
+	   )
+
+	   add_definitions (-DHAVE_XML_FILES)
+	endif (XMLFILES)
+
 	include_directories (
 	          ${SDRPLAY_INCLUDES}
 	          ${FFTW_INCLUDE_DIRS}
@@ -405,6 +526,12 @@ endif ()
 	add_executable (${objectName} 
 	                ${${objectName}_SRCS}
 	)
+
+	if (RPI_DEFINED)
+	   # compiler options seem changed with gcc versions. gcc 8.3.0 on Raspbian didn't accept -mcpu ..
+	   # test options with "make VERBOSE=1"
+	   target_compile_options(${objectName}  PRIVATE -march=armv7-a -mfloat-abi=hard -mfpu=neon-vfpv4 )
+	endif()
 
 	target_link_libraries (${objectName}
 	                       ${FFTW3F_LIBRARIES}
